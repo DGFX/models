@@ -1,4 +1,8 @@
-"""Hub page tests plus a local import check that both Modal apps define cleanly."""
+"""Hub page tests plus a local import check that both Modal apps define cleanly.
+
+Page tests need FastAPI, which the hub image installs. A deploy machine that only
+has ``modal`` skips those tests. The app-definition test still runs.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+try:
+    from fastapi.testclient import TestClient
+except ImportError:
+    TestClient = None
 
 from common.jobs import JOB_ID_RE, DICT_NAME, VOLUME_NAME, DirectoryFiles, JobStore, MappingRecords
 from hub.backfill import parse_args, run_import
@@ -51,6 +58,7 @@ def closure(fn) -> dict:
     return dict(zip(load.__code__.co_freevars, (cell.cell_contents for cell in load.__closure__)))
 
 
+@unittest.skipUnless(TestClient is not None, "hub page tests need fastapi installed")
 class HubPageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -138,6 +146,8 @@ class HubPageTests(unittest.TestCase):
         self.assertIn(f"/media/{job_id}/output.zip?download=1", page.text)
         self.assertIn(f"/media/{job_id}/videos/view.mp4?download=1", page.text)
         self.assertIn("views_per_layer", page.text)
+        self.assertIn("</div><h2>Parameters</h2>", page.text)
+        self.assertNotIn("<dl>", page.text)
         video = self.client.get(f"/media/{job_id}/grid.mp4")
         self.assertEqual(video.status_code, 200)
         self.assertEqual(video.content, b"grid-bytes")
@@ -156,6 +166,41 @@ class HubPageTests(unittest.TestCase):
         self.assertNotIn(b"nope", response.content)
         missing = self.client.get("/jobs/not-a-real-job")
         self.assertEqual(missing.status_code, 404)
+
+    def test_volume_reloads_only_when_a_file_is_missing(self) -> None:
+        calls: list[str] = []
+        job_id = self.record["job_id"]
+        grid = self.root / "vol" / "jobs" / job_id / "grid.mp4"
+
+        def reload() -> None:
+            calls.append("reload")
+            if not grid.is_file():
+                grid.write_bytes(b"grid-bytes")
+
+        client = TestClient(
+            create_app(
+                store=self.store,
+                models=self.models,
+                output_root=self.root / "vol",
+                reload_outputs=reload,
+            )
+        )
+        self.assertEqual(client.get("/").status_code, 200)
+        self.assertEqual(client.get(f"/jobs/{job_id}").status_code, 200)
+        present = client.get(f"/media/{job_id}/grid.mp4")
+        self.assertEqual(present.status_code, 200)
+        self.assertEqual(calls, [])
+
+        grid.unlink()
+        restored = client.get(f"/media/{job_id}/grid.mp4")
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.content, b"grid-bytes")
+        self.assertEqual(calls, ["reload"])
+
+        grid.unlink()
+        throttled = client.get(f"/media/{job_id}/grid.mp4")
+        self.assertEqual(throttled.status_code, 404)
+        self.assertEqual(calls, ["reload"])
 
     def test_running_job_refreshes(self) -> None:
         job_id = self.store.create(model="4danyone", gpu="A100-80GB", filename="live.mp4", params={})

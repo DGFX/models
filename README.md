@@ -9,9 +9,7 @@ One directory per model, plus a shared job log and a small hub that lists both.
 | `hub/` | CPU hub, Modal app name `models-hub` |
 | `hub/models.json` | Registry: name, one-liner, test link, GPU, last verified |
 
-The hub URL is printed by `modal deploy`. For this workspace it should look like:
-
-https://dgfx--models-hub-ui.us-east.modal.run
+The hub is live at https://dgfx--models-hub-ui.us-east.modal.run. `modal deploy` prints this URL.
 
 ## Job log
 
@@ -34,7 +32,7 @@ modal deploy hub/modal_app.py
 modal deploy 4danyone/modal_app.py
 ```
 
-`modal dict create` does nothing if the Dict already exists. `modal volume create` errors if the Volume already exists; continue if that happens. The apps also call `from_name(..., create_if_missing=True)`, so a first deploy creates either object that is still missing. Deploy the hub and 4DAnyone into the same Modal environment so they share the Dict and Volume.
+`modal dict create` does nothing if the Dict already exists. `modal volume create` errors if the Volume already exists; continue if that happens. The apps also call `from_name(..., create_if_missing=True)`, so a first deploy creates either object that is still missing. Deploy the hub and 4DAnyone into the same Modal environment so they share the Dict and Volume. The deployed hub is https://dgfx--models-hub-ui.us-east.modal.run.
 
 4DAnyone still needs its own weights volume and the `smplx-credentials` secret. Those steps are in `4danyone/README.md`. This deploy does not change any other Modal app.
 

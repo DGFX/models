@@ -45,6 +45,7 @@ OUTPUT_MOUNT = "/outputs"
 HUB_AUTH_SECRET = "models-hub-auth"
 # Off by default. Flip this and create the secret before deploying to require a token.
 ENABLE_HUB_TOKEN = False
+RELOAD_MIN_SECONDS = 10.0
 SCALEDOWN_SECONDS = 60
 REFRESH_SECONDS = 15
 JOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -143,9 +144,13 @@ button, .button { cursor: pointer; }
 .filename { word-break: break-all; }
 .still { max-width: min(100%, 720px); border-radius: 10px; display: block; margin: 8px 0; }
 video { width: min(100%, 960px); border-radius: 10px; background: #000; }
-dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; margin: 0; }
-dt { color: var(--muted); }
-dd { margin: 0; }
+.meta {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 6px 12px;
+  margin: 0 0 18px;
+}
+.meta > :nth-child(odd) { color: var(--muted); }
 pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -291,6 +296,19 @@ def file_ready(root: Path, relative: str | None) -> bool:
     return path.is_file()
 
 
+def job_files(job: dict) -> list[str]:
+    outputs = job.get("outputs") or {}
+    names = [outputs.get("grid"), outputs.get("still"), outputs.get("zip"), (job.get("input") or {}).get("thumbnail")]
+    names.extend(outputs.get("videos") or [])
+    return [str(name) for name in names if name]
+
+
+def outputs_missing(root: Path, jobs: list[dict]) -> bool:
+    """True when a finished job points at a file this container's mount does not show yet."""
+
+    return any(not file_ready(root, name) for job in jobs for name in job_files(job))
+
+
 def page(title: str, body: str, *, refresh_url: str | None = None) -> str:
     refresh = ""
     if refresh_url:
@@ -404,16 +422,16 @@ def render_job(job: dict, models: list[dict[str, str]], root: Path) -> str:
     bits = [
         "<p><a href=\"/\">All jobs</a></p>",
         f"<h1>{esc(filename)}</h1>",
-        "<section class=\"card\"><dl>",
-        f"<dt>Status</dt><dd><span class=\"pill {status_class(status)}\">{esc(status)}</span></dd>",
-        f"<dt>Model</dt><dd>{esc(model_name(models, job.get('model')))}</dd>",
-        f"<dt>GPU</dt><dd>{esc(job.get('gpu') or '—')}</dd>",
-        f"<dt>Created</dt><dd>{esc(format_warsaw(job.get('created_at')))}</dd>",
-        f"<dt>Started</dt><dd>{esc(format_warsaw(job.get('started_at')))}</dd>",
-        f"<dt>Finished</dt><dd>{esc(format_warsaw(job.get('finished_at')))}</dd>",
-        f"<dt>Duration</dt><dd>{esc(format_duration(job.get('duration_seconds')))}</dd>",
-        f"<dt>Cost</dt><dd>{esc(format_cost(job.get('cost_usd')))}</dd>",
-        "</dl>",
+        "<section class=\"card\"><div class=\"meta\">",
+        f"<div>Status</div><div><span class=\"pill {status_class(status)}\">{esc(status)}</span></div>",
+        f"<div>Model</div><div>{esc(model_name(models, job.get('model')))}</div>",
+        f"<div>GPU</div><div>{esc(job.get('gpu') or '—')}</div>",
+        f"<div>Created</div><div>{esc(format_warsaw(job.get('created_at')))}</div>",
+        f"<div>Started</div><div>{esc(format_warsaw(job.get('started_at')))}</div>",
+        f"<div>Finished</div><div>{esc(format_warsaw(job.get('finished_at')))}</div>",
+        f"<div>Duration</div><div>{esc(format_duration(job.get('duration_seconds')))}</div>",
+        f"<div>Cost</div><div>{esc(format_cost(job.get('cost_usd')))}</div>",
+        "</div>",
     ]
     params = (job.get("input") or {}).get("params") or {}
     if params:
@@ -513,13 +531,26 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    def reload() -> None:
+    import threading
+    import time
+
+    reload_lock = threading.Lock()
+    last_reload = [0.0]
+
+    def reload(*, force: bool = False) -> None:
+        # Volume.reload() makes files on the mount briefly vanish for concurrent
+        # requests (random 404s on thumbnails). Only reload when a job references a
+        # file the mount does not show yet, and serialize and throttle it.
         if reload_outputs is None:
             return
-        try:
-            reload_outputs()
-        except Exception as exc:
-            print(f"models hub volume reload ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        with reload_lock:
+            if not force and time.monotonic() - last_reload[0] < RELOAD_MIN_SECONDS:
+                return
+            try:
+                reload_outputs()
+            except Exception as exc:
+                print(f"models hub volume reload ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            last_reload[0] = time.monotonic()
 
     @api.get("/health")
     def health(request: Request):
@@ -531,7 +562,6 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
     def index(request: Request):
         if not authorized(request):
             return deny()
-        reload()
         raw = request.query_params.get("model", "").strip()
         selected = raw if MODEL_RE.fullmatch(raw) else ""
         try:
@@ -539,6 +569,8 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
         except Exception as exc:
             print(f"models hub job list ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             jobs = []
+        if outputs_missing(output_root, jobs):
+            reload()
         refreshing = any(job.get("status") in {"queued", "running"} for job in jobs)
         refresh_url = ("/?" + urlencode({"model": selected})) if selected else "/"
         body = render_models(models) + render_jobs(
@@ -553,7 +585,6 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
     def job_page(job_id: str, request: Request):
         if not authorized(request):
             return deny()
-        reload()
         if not JOB_ID_RE.fullmatch(job_id):
             return finish(request, HTMLResponse(page("Not found", "<p>Unknown job.</p>"), status_code=404))
         try:
@@ -563,6 +594,8 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
             job = None
         if not job:
             return finish(request, HTMLResponse(page("Not found", "<p>Unknown job.</p>"), status_code=404))
+        if outputs_missing(output_root, [job]):
+            reload()
         refresh = f"/jobs/{job_id}" if job.get("status") in {"queued", "running"} else None
         title = (job.get("input") or {}).get("filename") or job_id
         return finish(
@@ -574,8 +607,10 @@ def create_app(*, store, models: list[dict[str, str]], output_root: Path, token:
     def media(job_id: str, file_path: str, request: Request, download: int = 0):
         if not authorized(request):
             return deny()
-        reload()
+        # Serve what is already mounted; reload only when the file is missing.
         path = resolve_media(output_root, job_id, file_path)
+        if path is not None and not path.is_file():
+            reload()
         if path is None or not path.is_file():
             return finish(request, HTMLResponse(page("Not found", "<p>File not found.</p>"), status_code=404))
         media_type = {
