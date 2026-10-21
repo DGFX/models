@@ -10,7 +10,10 @@ Run the upstream example (6 views) and save the outputs locally:
 
 The Gradio test UI is a separate CPU endpoint. Inference runs on one A100-80GB
 and scales to zero. Weights are downloaded into the `models-4danyone-weights`
-volume on first use. This file does not deploy anything at import time.
+volume on first use. UI runs and `modal run` also record a job in the shared
+`models-jobs` Dict and copy outputs onto the `models-job-outputs` Volume.
+A logging failure does not fail inference. This file does not deploy anything
+at import time.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import tempfile
 import traceback
 import uuid
@@ -34,6 +38,9 @@ APP_NAME = "4danyone"
 GPU = "A100-80GB"
 VOLUME_NAME = "models-4danyone-weights"
 SMPLX_SECRET_NAME = "smplx-credentials"
+JOBS_DICT_NAME = "models-jobs"
+JOBS_VOLUME_NAME = "models-job-outputs"
+JOB_OUTPUTS_MOUNT = "/job-outputs"
 WEIGHTS_MOUNT = "/weights"
 MODEL_DIR = Path(WEIGHTS_MOUNT) / "models"
 GVHMR_ROOT = Path("/opt/4DAnyone/third_party/GVHMR")
@@ -50,6 +57,8 @@ PREVIEW_MAX_HEIGHT = 640
 
 app = modal.App(APP_NAME)
 weights = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+job_records = modal.Dict.from_name(JOBS_DICT_NAME, create_if_missing=True)
+job_outputs = modal.Volume.from_name(JOBS_VOLUME_NAME, create_if_missing=True)
 smplx_secret = modal.Secret.from_name(
     SMPLX_SECRET_NAME,
     required_keys=["SMPLX_USERNAME", "SMPLX_PASSWORD"],
@@ -119,6 +128,20 @@ web_image = (
         }
     )
 )
+
+
+def _mount_common(image: modal.Image) -> modal.Image:
+    """Mount the shared job log at container start. This does not rebuild pip layers."""
+
+    return image.add_local_dir(
+        APP_DIR.parent / "common",
+        "/opt/models-common/common",
+        ignore=["**/__pycache__/**", "**/*.pyc", "**/test_*.py"],
+    )
+
+
+gpu_image = _mount_common(gpu_image)
+web_image = _mount_common(web_image)
 
 
 def as_int(name: str, value: object) -> int:
@@ -457,7 +480,7 @@ def prefetch_assets(include_models: bool = True, include_example: bool = True) -
 @app.cls(
     image=gpu_image,
     gpu=GPU,
-    volumes={WEIGHTS_MOUNT: weights},
+    volumes={WEIGHTS_MOUNT: weights, JOB_OUTPUTS_MOUNT: job_outputs},
     secrets=[smplx_secret],
     timeout=INFERENCE_TIMEOUT_SECONDS,
     startup_timeout=20 * 60,
@@ -480,19 +503,30 @@ class Inference:
         layer_pitches: list[int] | str = "15",
         start_yaw: int = 0,
         yaw_span: int = 360,
+        job_id: str | None = None,
     ) -> dict:
         """Run one 4DAnyone inference on the single visible A100 and pack the outputs."""
 
-        views, pitches, yaw0, span = validate_view_request(
-            views_per_layer, layer_pitches, start_yaw, yaw_span
-        )
-        weights.reload()
-        if not _weights_ready(include_example=use_example):
-            # Caller should have prefetched on CPU. This is the fallback.
-            prefetch_assets.remote(include_models=True, include_example=use_example)
+        store = _safe_store(with_files=True)
+        try:
+            views, pitches, yaw0, span = validate_view_request(
+                views_per_layer, layer_pitches, start_yaw, yaw_span
+            )
+        except Exception as exc:
+            _call(store, "fail", job_id, format_error(exc))
+            raise
+        _call(store, "running", job_id)
+        try:
             weights.reload()
-        if not _weights_ready(include_example=use_example):
-            raise RuntimeError("Model weights are still missing after the volume download.")
+            if not _weights_ready(include_example=use_example):
+                # Caller should have prefetched on CPU. This is the fallback.
+                prefetch_assets.remote(include_models=True, include_example=use_example)
+                weights.reload()
+            if not _weights_ready(include_example=use_example):
+                raise RuntimeError("Model weights are still missing after the volume download.")
+        except Exception as exc:
+            _call(store, "fail", job_id, format_error(exc))
+            raise
 
         input_dir: Path | None = None
         output_parent: Path | None = None
@@ -538,11 +572,23 @@ class Inference:
             write_grid(videos, grid_path)
             archive_path = Path("/tmp") / f"{output_parent.name}.zip"
             zip_directory(output_dir, archive_path)
+            plain = _plain_summary(summary)
+            _persist_job(
+                store,
+                job_id,
+                video_path=video_path,
+                output_dir=output_dir,
+                archive_path=archive_path,
+                summary=plain,
+            )
             return {
                 "zip_bytes": archive_path.read_bytes(),
-                "summary": _plain_summary(summary),
+                "summary": plain,
                 "video_names": [path.relative_to(output_dir).as_posix() for path in videos],
             }
+        except Exception as exc:
+            _call(store, "fail", job_id, format_error(exc))
+            raise
         finally:
             if input_dir is not None:
                 shutil.rmtree(input_dir, ignore_errors=True)
@@ -550,6 +596,78 @@ class Inference:
                 shutil.rmtree(output_parent, ignore_errors=True)
             if archive_path is not None:
                 archive_path.unlink(missing_ok=True)
+
+
+def _ensure_common_importable() -> None:
+    for entry in (Path("/opt/models-common"), APP_DIR.parent):
+        if (entry / "common" / "jobs.py").is_file():
+            text = str(entry)
+            if text not in sys.path:
+                sys.path.insert(0, text)
+            return
+
+
+def _safe_store(*, with_files: bool):
+    """Job log handle. None when the helper cannot be imported or constructed."""
+
+    try:
+        _ensure_common_importable()
+        from common.jobs import JobStore, MappingRecords, MountedFiles
+
+        files = MountedFiles(Path(JOB_OUTPUTS_MOUNT), job_outputs) if with_files else None
+        return JobStore(records=MappingRecords(job_records), files=files, strict=False)
+    except Exception as exc:
+        print(f"models job log ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _call(store, method: str, *args, **kwargs) -> None:
+    if store is None:
+        return
+    try:
+        getattr(store, method)(*args, **kwargs)
+    except Exception as exc:
+        print(f"models job log ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+def _persist_job(store, job_id: str | None, *, video_path: Path, output_dir: Path, archive_path: Path, summary: dict) -> None:
+    """Copy grid, still, view videos, zip, and an input thumbnail onto the shared volume."""
+
+    if store is None or not job_id:
+        return
+    thumb = Path("/tmp") / f"models-thumb-{job_id}.jpg"
+    still = Path("/tmp") / f"models-still-{job_id}.jpg"
+    try:
+        _ensure_common_importable()
+        from common.jobs import write_jpeg
+
+        write_jpeg(video_path, thumb)
+        grid = output_dir / "grid.mp4"
+        write_jpeg(grid, still)
+        videos = sorted(path for path in (output_dir / "videos").glob("*.mp4") if path.is_file())
+        stored = store.attach_outputs(
+            job_id,
+            grid=grid if grid.is_file() else None,
+            still=still if still.is_file() else None,
+            archive=archive_path if archive_path.is_file() else None,
+            videos=videos,
+            thumbnail=thumb if thumb.is_file() else None,
+        )
+        _call(
+            store,
+            "succeed",
+            job_id,
+            outputs=stored.get("outputs"),
+            thumbnail=stored.get("thumbnail"),
+            summary=summary,
+            persist_error=stored.get("persist_error"),
+        )
+    except Exception as exc:
+        print(f"models job log ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        _call(store, "succeed", job_id, persist_error=f"outputs were not stored: {exc}")
+    finally:
+        thumb.unlink(missing_ok=True)
+        still.unlink(missing_ok=True)
 
 
 def _execute(
@@ -561,6 +679,7 @@ def _execute(
     layer_pitches: list[int],
     start_yaw: int,
     yaw_span: int,
+    job_id: str | None = None,
 ) -> dict:
     prefetch_assets.remote(include_models=True, include_example=use_example)
     return Inference().run.remote(
@@ -571,7 +690,53 @@ def _execute(
         layer_pitches=layer_pitches,
         start_yaw=start_yaw,
         yaw_span=yaw_span,
+        job_id=job_id,
     )
+
+
+def _execute_logged(
+    *,
+    video_bytes: bytes | None,
+    video_name: str | None,
+    use_example: bool,
+    views_per_layer: int,
+    layer_pitches: list[int],
+    start_yaw: int,
+    yaw_span: int,
+) -> dict:
+    """Queue a job, run inference, and record failure if the remote call never finishes."""
+
+    filename = EXAMPLE_NAME if use_example else (video_name or "input.mp4")
+    params = {
+        "views_per_layer": views_per_layer,
+        "layer_pitches": list(layer_pitches),
+        "start_yaw": start_yaw,
+        "yaw_span": yaw_span,
+        "use_example": use_example,
+        "enable_turbo": True,
+    }
+    store = _safe_store(with_files=False)
+    job_id = None
+    if store is not None:
+        try:
+            job_id = store.create(model="4danyone", gpu=GPU, filename=filename, params=params)
+        except Exception as exc:
+            print(f"models job log ignored: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            job_id = None
+    try:
+        return _execute(
+            video_bytes=video_bytes,
+            video_name=video_name,
+            use_example=use_example,
+            views_per_layer=views_per_layer,
+            layer_pitches=layer_pitches,
+            start_yaw=start_yaw,
+            yaw_span=yaw_span,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        _call(store, "fail_if_open", job_id, format_error(exc))
+        raise
 
 
 def generate(video, views_per_layer, layer_pitches, start_yaw, yaw_span):
@@ -608,7 +773,7 @@ def generate(video, views_per_layer, layer_pitches, start_yaw, yaw_span):
         None,
     )
     try:
-        result = _execute(
+        result = _execute_logged(
             video_bytes=video_bytes,
             video_name=video_name,
             use_example=use_example,
@@ -757,7 +922,7 @@ def main(
         f"views_per_layer={views} layer_pitches={pitches} start_yaw={yaw0} yaw_span={span}",
         flush=True,
     )
-    result = _execute(
+    result = _execute_logged(
         video_bytes=video_bytes,
         video_name=video_name,
         use_example=use_example,
