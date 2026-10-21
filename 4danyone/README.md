@@ -21,7 +21,15 @@ Nothing is kept warm. `scaledown_window` is 180 seconds and `min_containers` is 
 
 ## SMPL-X license
 
-GVHMR needs `SMPLX_NEUTRAL.npz` from the official SMPL-X release. That file is not in the public Hugging Face repo and is not committed here. Register and accept the license at https://smpl-x.is.tue.mpg.de/ , then create a Modal secret **before** the first inference:
+GVHMR needs `SMPLX_NEUTRAL.npz` from the official SMPL-X release. That file is not in the public Hugging Face repo and is not committed here. Register and accept the license at https://smpl-x.is.tue.mpg.de/, download `models_smplx_v1_1.zip` in a browser, and upload it before the first inference. This is the expected path:
+
+```bash
+modal volume put models-4danyone-weights models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip
+```
+
+The app keeps `models/smplx/SMPLX_NEUTRAL.npz` from that archive on the volume. `incoming/SMPLX_NEUTRAL.npz` is accepted as well. Do not commit either file.
+
+The functions also reference a Modal secret, `smplx-credentials`, with `SMPLX_USERNAME` and `SMPLX_PASSWORD`. Create it so `modal deploy` can resolve the secret:
 
 ```bash
 modal secret create smplx-credentials \
@@ -29,20 +37,11 @@ modal secret create smplx-credentials \
   SMPLX_PASSWORD='your-smplx-password'
 ```
 
-The secret must contain both `SMPLX_USERNAME` and `SMPLX_PASSWORD`. The app posts those to upstream's official download URL (`https://download.is.tue.mpg.de/download.php?domain=smplx&sfile=models_smplx_v1_1.zip`) and keeps only `models/smplx/SMPLX_NEUTRAL.npz` on the volume.
-
-If the website returns HTML instead of a zip, download `models_smplx_v1_1.zip` in a browser while logged into the licensed account and upload it once:
-
-```bash
-modal volume put models-4danyone-weights \
-  models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip
-```
-
-`incoming/SMPLX_NEUTRAL.npz` is accepted as well. Do not commit either file.
+Posting those credentials to `https://download.is.tue.mpg.de/download.php?domain=smplx&sfile=models_smplx_v1_1.zip` returns the HTML sign-in page even with a valid account, so the secret does not install SMPL-X. Use the `modal volume put` command above.
 
 ## Deploy and test
 
-From the repository root, after the secret exists:
+From the repository root, after the secret exists and the SMPL-X archive is on the volume:
 
 ```bash
 modal deploy 4danyone/modal_app.py
@@ -68,15 +67,13 @@ Quote `--layer-pitches`. Total views (`views_per_layer` times the number of pitc
 
 ## Test UI
 
-Placeholder: `TODO` — after deploy, paste the printed URL for the `ui` function.
-
-Expected shape: `https://<workspace>--4danyone-ui.modal.run`
+Deployed: https://dgfx--4danyone-ui.us-east.modal.run
 
 The page takes a 9:16 upload, `views_per_layer` (default 6), `layer_pitches`, `start_yaw`, and `yaw_span`. Clicking the upstream example fills those fields and starts the run. Results are the dense view videos, a grid preview mp4, and a zip of the output directory (videos, skeletons, cameras, GVHMR motion, metadata, and `grid.mp4`).
 
 ## GPU, time, cost
 
-- GPU: `A100-80GB` only. No H100 and no multi-GPU. The GPU container also requests 8 CPU cores, 64 GiB of RAM, and 64 GiB of ephemeral disk, because a GPU request does not raise Modal's default memory.
+- GPU: `A100-80GB` only. No H100 and no multi-GPU. The GPU container also requests 8 CPU cores and 64 GiB of RAM, because a GPU request does not raise Modal's default memory. Ephemeral disk stays at Modal's default (explicit requests must be at least 512 GiB).
 - Run time: `TODO` (not measured in this environment). Time the default 6-view example after the volume is warm. Upstream's published Turbo 6-view figures are a few minutes of denoising plus about a minute each for GVHMR and skeleton extraction on the GPUs they benchmarked; the first Modal run also downloads the weights.
 - Cost: `TODO`
 - Last verified: `TODO`

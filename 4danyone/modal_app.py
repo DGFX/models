@@ -84,6 +84,7 @@ gpu_image = (
         "libglib2.0-0",
         "libgomp1",
         "libsm6",
+        "libtk8.6",  # GVHMR body_model.py has a stray `from turtle import forward` -> tkinter
         "libxext6",
         "libxrender1",
     )
@@ -339,11 +340,13 @@ def _weights_ready(include_example: bool) -> bool:
 
 
 def ensure_licensed_smplx() -> str:
-    """Install SMPL-X from the volume or the license holder's Modal secret.
+    """Install SMPL-X from a file already on the weights volume.
 
-    The official files are not redistributed. `_download_official` is upstream's
-    POST against https://download.is.tue.mpg.de/ after the user has registered
-    and accepted the SMPL-X license.
+    The official files are not redistributed. The expected source is
+    ``incoming/models_smplx_v1_1.zip`` (or ``incoming/SMPLX_NEUTRAL.npz``),
+    uploaded with ``modal volume put`` after the license is accepted.
+    Upstream's POST to download.is.tue.mpg.de returns the HTML sign-in page
+    even with valid credentials, so that attempt is only a last resort.
     """
 
     from fdanyone.assets import SMPLX_MODEL
@@ -367,10 +370,10 @@ def ensure_licensed_smplx() -> str:
     if not username or not password:
         raise AssetError(
             "SMPL-X is not on the weights volume. Accept the license at "
-            "https://smpl-x.is.tue.mpg.de/ and create the Modal secret "
-            f"`{SMPLX_SECRET_NAME}` with SMPLX_USERNAME and SMPLX_PASSWORD. "
-            "Or upload the official models_smplx_v1_1.zip (or SMPLX_NEUTRAL.npz) with "
-            "`modal volume put models-4danyone-weights <file> incoming/<file>`."
+            "https://smpl-x.is.tue.mpg.de/, download models_smplx_v1_1.zip in a browser, "
+            "and upload it with `modal volume put models-4danyone-weights "
+            "models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip`. "
+            "incoming/SMPLX_NEUTRAL.npz is accepted as well."
         )
 
     with tempfile.TemporaryDirectory(prefix="fdanyone-smplx-") as temporary_dir:
@@ -380,9 +383,10 @@ def ensure_licensed_smplx() -> str:
             install_smplx(archive, MODEL_DIR, GVHMR_ROOT)
         except AssetError as exc:
             raise AssetError(
-                f"{exc} Scripted login is sometimes rejected by the SMPL-X site. "
-                "Download models_smplx_v1_1.zip in a browser after accepting the license, then run "
-                "`modal volume put models-4danyone-weights models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip`."
+                f"{exc} The SMPL-X site returns the HTML sign-in page even with valid "
+                "SMPLX_USERNAME and SMPLX_PASSWORD. Download models_smplx_v1_1.zip in a "
+                "browser after accepting the license, then run `modal volume put "
+                "models-4danyone-weights models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip`."
             ) from exc
     return "downloaded with SMPLX_USERNAME"
 
@@ -443,7 +447,6 @@ def coerce_video(value: object) -> Path | None:
     max_containers=1,
     cpu=2.0,
     memory=16384,
-    ephemeral_disk=16384,
 )
 def prefetch_assets(include_models: bool = True, include_example: bool = True) -> dict[str, str]:
     """CPU-only first-use download. Keeps the A100 idle while weights transfer."""
@@ -460,11 +463,11 @@ def prefetch_assets(include_models: bool = True, include_example: bool = True) -
     startup_timeout=20 * 60,
     scaledown_window=SCALEDOWN_SECONDS,
     max_containers=1,
-    # A GPU request does not raise the default RAM or disk. The 12 GB DiT plus
-    # GVHMR checkpoints need host memory, and /tmp holds the clip and the zip.
+    # A GPU request does not raise the default RAM. The 12 GB DiT plus GVHMR
+    # checkpoints need host memory. ephemeral_disk is left at Modal's default:
+    # explicit requests must be at least 512 GiB, far more than /tmp needs.
     cpu=8.0,
     memory=65536,
-    ephemeral_disk=65536,
 )
 class Inference:
     @modal.method()
@@ -701,15 +704,25 @@ def _load_example_video() -> str | None:
     scaledown_window=SCALEDOWN_SECONDS,
     cpu=2.0,
     memory=16384,
-    ephemeral_disk=65536,
 )
 @modal.concurrent(max_inputs=16)
 @modal.asgi_app()
 def ui():
     """CPU-only Gradio page. Inference is a remote call to `Inference`."""
 
+    import gradio as gr
+    from fastapi import FastAPI
+
     demo = build_demo(_load_example_video())
-    return demo.app
+    # demo.app without launch() 500s on GET / (jinja UndefinedError: config is None).
+    # mount_gradio_app builds the app and replaces allowed_paths and max_file_size.
+    return gr.mount_gradio_app(
+        FastAPI(),
+        demo,
+        path="/",
+        allowed_paths=[WEIGHTS_MOUNT, "/tmp"],
+        max_file_size=2 * 1024**3,
+    )
 
 
 @app.local_entrypoint()
