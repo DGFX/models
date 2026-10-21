@@ -27,7 +27,7 @@ GVHMR needs `SMPLX_NEUTRAL.npz` from the official SMPL-X release. That file is n
 modal volume put models-4danyone-weights models_smplx_v1_1.zip incoming/models_smplx_v1_1.zip
 ```
 
-The app keeps `models/smplx/SMPLX_NEUTRAL.npz` from that archive on the volume. `incoming/SMPLX_NEUTRAL.npz` is accepted as well. Do not commit either file.
+The app keeps `models/smplx/SMPLX_NEUTRAL.npz` from that archive on the volume. `incoming/SMPLX_NEUTRAL.npz` is accepted as well. The 2026-10-21 verification used that file: `SMPLX_NEUTRAL.npz` uploaded to `incoming/SMPLX_NEUTRAL.npz`. Do not commit either file.
 
 The functions also reference a Modal secret, `smplx-credentials`, with `SMPLX_USERNAME` and `SMPLX_PASSWORD`. Create it so `modal deploy` can resolve the secret:
 
@@ -73,10 +73,11 @@ The page takes a 9:16 upload, `views_per_layer` (default 6), `layer_pitches`, `s
 
 ## GPU, time, cost
 
-- GPU: `A100-80GB` only. No H100 and no multi-GPU. The GPU container also requests 8 CPU cores and 64 GiB of RAM, because a GPU request does not raise Modal's default memory. Ephemeral disk stays at Modal's default (explicit requests must be at least 512 GiB).
-- Run time: `TODO` (not measured in this environment). Time the default 6-view example after the volume is warm. Upstream's published Turbo 6-view figures are a few minutes of denoising plus about a minute each for GVHMR and skeleton extraction on the GPUs they benchmarked; the first Modal run also downloads the weights.
-- Cost: `TODO`
-- Last verified: `TODO`
+- GPU: `A100-80GB` (8 CPU cores, 64 GiB RAM). No H100 and no multi-GPU. A GPU request does not raise Modal's default memory, so the CPU and RAM requests are set on the function. Ephemeral disk stays at Modal's default (explicit requests must be at least 512 GiB).
+- Run time: a warm 6-view run of the upstream example took about 518 s wall clock. Inference was about 482 s: about 49 s preprocess, about 1 m 46 s denoise, and about 17 s per view to write. Peak VRAM was 21.9 GB allocated and 33.3 GB reserved. The first run also downloads the weights.
+- Cost: about $0.50 per 6-view run at list price, up to about $0.85 with a region multiplier.
+- Last verified: 2026-10-21, commit `6e780fd`, upstream example, `views_per_layer` 6, on one `A100-80GB`.
+- Test UI: https://dgfx--4danyone-ui.us-east.modal.run
 
 ## Layout
 
