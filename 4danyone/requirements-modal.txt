@@ -1,0 +1,51 @@
+# Inference image for the Modal wrapper.
+#
+# These pins satisfy 4DAnyone's requirements.txt (Python 3.11, torch 2.8,
+# numpy 2) and the packages the static-camera GVHMR path actually imports.
+# Do not install third_party/GVHMR/requirements.txt: it pins torch 2.3+cu121,
+# numpy 1.23.5, and a py310 pytorch3d wheel, which cannot share an environment
+# with 4DAnyone. DPVO, wis3d, pycolmap, and compiled pytorch3d are not installed;
+# 4DAnyone vendors a pytorch3d subset and forces use_dpvo=false.
+
+torch==2.8.0
+torchvision==0.23.0
+numpy==2.2.6
+
+# 4DAnyone requirements.txt, pinned inside each published range.
+# av 16 is required (>=16,<17). 16.1.0 ships libx264 and libx264rgb.
+av==16.1.0
+colorlog==6.9.0
+einops==0.8.2
+ffmpeg-python==0.2.0
+fire==0.7.0
+huggingface-hub==1.33.0
+hydra-core==1.3.2
+hydra-zen==0.16.0
+imageio==2.37.2
+kornia==0.7.4
+lapx==0.5.11
+omegaconf==2.3.0
+opencv-python==4.11.0.86
+pillow==11.3.0
+pytorch-lightning==2.5.6
+safetensors==0.8.0
+scipy==1.15.3
+smplx==0.1.28
+timm==0.9.12
+tokenizers==0.23.3
+tqdm==4.67.1
+transformers==5.17.0
+typing-extensions==4.15.0
+ultralytics==8.3.253
+ultralytics-thop==2.0.22
+yacs==0.1.8
+
+# Transitive pins that otherwise float onto a newer torch or a breaking major.
+lightning-utilities==0.15.3
+matplotlib==3.10.9
+polars==1.9.0
+psutil==6.1.1
+pyyaml==6.0.2
+regex==2026.9.29
+requests==2.32.4
+torchmetrics==1.9.0

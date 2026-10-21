@@ -1,0 +1,42 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Runtime artifacts and large assets
+outputs/
+/data/fdanyone/
+/data/gvhmr/
+/data/nerfstudio/
+/data/ns_data/
+/data/.download/
+.download-*/
+/data/source/pexels/*.mp4
+/models/
+/checkpoints/
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+
+# Local-only configuration
+.env
+.env.*
+!.env.example
+
+# Local agent state may contain private provenance.
+.claude/
+work/
+
+# GVHMR ships small body-model tensors (not the licensed SMPL-X weights).
+# Keep them in this vendor even though the patterns above ignore checkpoints.
+!**/*.pt
+!**/*.pth
