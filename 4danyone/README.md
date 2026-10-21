@@ -65,6 +65,10 @@ modal run 4danyone/modal_app.py \
 
 Quote `--layer-pitches`. Total views (`views_per_layer` times the number of pitches) must be divisible by 6. Each pitch is an integer from -15 to 45.
 
+## Job log
+
+UI runs and `modal run` write a job to the shared `models-jobs` Dict. The GPU container copies `grid.mp4`, a still frame, the view videos, `output.zip`, and an input thumbnail to the `models-job-outputs` Volume under `jobs/<job_id>/`. The models hub reads that log. If the Dict or Volume write fails, inference still returns the zip.
+
 ## Test UI
 
 Deployed: https://dgfx--4danyone-ui.us-east.modal.run

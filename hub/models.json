@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "id": "4danyone",
+      "name": "4DAnyone",
+      "summary": "Turns one casual monocular video of a person into consistent multiview videos.",
+      "test_url": "https://dgfx--4danyone-ui.us-east.modal.run",
+      "gpu": "A100-80GB",
+      "verified": "2026-10-21"
+    }
+  ]
+}
