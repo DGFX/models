@@ -1,0 +1,4 @@
+4DAnyone https://github.com/ant-research/4DAnyone 6dcf626d74bd95c42792f86b1d55e3841075c10c
+GVHMR https://github.com/zju3dv/GVHMR 6ec3ca39336c50492c0fae65fba2fb831fc7d866
+Hugging Face AntResearch/4DAnyone revision 4c80e87b805a5f8461cf339cdbe2fb4249e585aa
+BiRefNet ZhengPeng7/BiRefNet revision e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4
